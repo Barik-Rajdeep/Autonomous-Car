@@ -1,0 +1,109 @@
+import serial
+from flask import Flask, Response
+import threading
+
+app = Flask(__name__)
+
+# Serial connections to Arduino 1 (Ultrasonic) and Arduino 2 (Relay Control)
+arduino_ultrasonic = serial.Serial('/dev/serial0', 9600, timeout=1)
+arduino_relay = serial.Serial('/dev/ttyACM0', 9600, timeout=1)  # Change if needed
+
+latest_data = "Waiting for Ultrasonic Data"
+rear_wheel_status = "Waiting for Rear Wheel Data"
+
+def read_serial():
+    global latest_data, rear_wheel_status
+    while True:
+        # Read ultrasonic sensor data from Arduino 1
+        if arduino_ultrasonic.in_waiting > 0:
+            latest_data = arduino_ultrasonic.readline().decode('utf-8', errors='ignore').strip()
+            send_command_based_on_distance(latest_data)  # Process & send movement command
+
+        # Read real-time movement status from Arduino 2
+        if arduino_relay.in_waiting > 0:
+            rear_wheel_status = arduino_relay.readline().decode('utf-8', errors='ignore').strip()
+
+def send_command_based_on_distance(data):
+    try:
+        distance = int(data.split(": ")[1])  # Extract numerical distance value
+        print(f"Ultrasonic Distance: {distance} cm")
+
+        if distance < 15:  # Danger zone
+            arduino_relay.write(b"B")  # Send backward command
+            print("Command Sent: BACKWARD")
+        elif distance < 30:  # Warning zone
+            arduino_relay.write(b"S")  # Send stop command
+            print("Command Sent: STOP")
+        else:  # Safe zone
+            arduino_relay.write(b"F")  # Send forward command
+            print("Command Sent: FORWARD")
+    except:
+        print("Error Processing Ultrasonic Data")  # Handle faulty data input
+
+@app.route('/data')
+def get_data():
+    return Response(f"Ultrasonic Distance: {latest_data}\nRear Wheels: {rear_wheel_status}", mimetype="text/plain")
+
+@app.route('/')
+def index():
+    return '''
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Ultrasonic & Rear Wheel Status</title>
+        <style>
+            body {
+                background-color: #181818;
+                color: #ffffff;
+                font-family: 'Arial', sans-serif;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                height: 100vh;
+                margin: 0;
+            }
+            #container {
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                gap: 20px;
+            }
+            .widget {
+                font-size: 24px;
+                background: linear-gradient(45deg, #0099ff, #00ff99);
+                padding: 20px 40px;
+                border-radius: 12px;
+                color: #ffffff;
+                font-weight: bold;
+                box-shadow: 0 5px 15px rgba(0, 255, 255, 0.2);
+                text-align: center;
+                min-width: 300px;
+            }
+        </style>
+    </head>
+    <body>
+        <div id="container">
+            <div id="ultrasonic" class="widget">Ultrasonic Distance: Waiting for data...</div>
+            <div id="rearWheel" class="widget">Rear Wheels: Waiting for data...</div>
+        </div>
+
+        <script>
+            async function fetchData() {
+                const response = await fetch('/data');
+                const data = await response.text();
+                const lines = data.split("\\n");
+
+                document.getElementById('ultrasonic').innerText = lines[0] || "Ultrasonic Distance: Waiting for data...";
+                document.getElementById('rearWheel').innerText = lines[1] || "Rear Wheels: Waiting for data...";
+            }
+
+            setInterval(fetchData, 500);
+        </script>
+    </body>
+    </html>
+    '''
+
+if __name__ == '__main__':
+    threading.Thread(target=read_serial, daemon=True).start()
+    app.run(host='0.0.0.0', port=5000)
